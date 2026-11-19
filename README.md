@@ -1,8 +1,8 @@
-# Cort AI Studio 1.2.0
+# Cort AI Studio 1.3.0
 
 Plugin de WordPress para generar borradores de blog y crear o modificar páginas nativas de Elementor mediante propuestas con vista previa, aprobación y respaldo. Requiere WordPress 6.5 o posterior, PHP 8.1 o posterior y un proyecto de OpenAI API con acceso a los modelos elegidos. Elementor es opcional para Blog Writer y necesario para AI Page Builder.
 
-La navegación incluye Dashboard, AI Blog Writer, AI Page Builder, Coming Soon y Settings. AI Page Builder planifica la dirección visual antes del contenido y genera composiciones, tarjetas y estilos responsive nativos de Elementor. Consulta [la arquitectura, compatibilidad, limitaciones, pruebas e instrucciones de AI Page Builder](docs/page-builder.md). La edición Atomic V4 y el rediseño estructural de páginas existentes siguen deshabilitados; se admiten estructuras clásicas y Flexbox con verificación de guardado.
+La navegación incluye Dashboard, AI Blog Writer, AI Page Builder, Coming Soon y Settings. AI Page Builder planifica la dirección visual antes del contenido y genera composiciones, tarjetas y estilos responsive nativos de Elementor. La versión 1.3 detecta los widgets por sus controles registrados, permite los compatibles de PRO Elements sin exigir Elementor Pro oficial y muestra el inventario en el panel. Consulta [la arquitectura, compatibilidad, limitaciones, pruebas e instrucciones de AI Page Builder](docs/page-builder.md). Atomic V4 continúa excluido; se admiten estructuras clásicas y Flexbox con verificación de guardado.
 
 ## Instalar y configurar
 

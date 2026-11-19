@@ -31,7 +31,8 @@ final class Rest
     {
         if (!Module::can_edit()) return Support::error('permission', __('You do not have permission to use AI Page Builder.', 'cort-ai-studio'), 403);
         if (!wp_verify_nonce($request->get_header('X-WP-Nonce'), 'wp_rest')) return Support::error('nonce', __('Your session expired. Reload this page.', 'cort-ai-studio'), 403);
-        if (strlen($request->get_body()) > 44000 || ($request->get_method() === 'POST' && $request->get_body() !== '' && !is_array($request->get_json_params()))) return Support::error('input', __('Send a valid page form within the allowed size.', 'cort-ai-studio'));
+        $body = (string) $request->get_body();
+        if (strlen($body) > 44000 || ($request->get_method() === 'POST' && $body !== '' && !is_array($request->get_json_params()))) return Support::error('input', __('Send a valid page form within the allowed size.', 'cort-ai-studio'));
         return $this->repository->ready() ? true : Support::error('schema', __('The Page Builder operation table is unavailable.', 'cort-ai-studio'), 503);
     }
 

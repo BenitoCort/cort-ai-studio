@@ -329,7 +329,7 @@ final class Service
         try {
             $state = &$row['state'];
             if ($state['adapter_version'] !== $this->adapter->availability()['version'] || $state['design_hash'] !== Support::hash($this->adapter->design())) {
-                $this->fail($row, __('The builder version or design system changed. Generate a fresh proposal.', 'cort-ai-studio'));
+                $this->fail($row, __('The builder, widget provider or design system changed. Generate a fresh proposal.', 'cort-ai-studio'));
                 return $this->commit($row);
             }
             $preview = $this->adapter->snapshot($row['preview_id']);

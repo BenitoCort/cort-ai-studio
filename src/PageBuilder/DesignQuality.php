@@ -19,7 +19,13 @@ final class DesignQuality
                 $nodeBackground = isset($s['background_color']) && preg_match('/^#[0-9a-fA-F]{6}$/D', $s['background_color']) ? $s['background_color'] : $background;
                 $nodePhoto = $photo || !empty($s['background_image']['url']) || !empty($s['bg_image']['url']);
                 foreach (['title_color', 'text_color', 'description_color', 'button_text_color'] as $color) {
+                    if (($node['widgetType'] ?? '') === 'slides' && in_array($color, ['description_color', 'title_color'], true)) continue;
                     if (!$nodePhoto && $nodeBackground && isset($s[$color]) && preg_match('/^#[0-9a-fA-F]{6}$/D', $s[$color])) $contrasts[] = DesignDirection::contrast($s[$color], $nodeBackground);
+                }
+                foreach ($s['slides'] ?? [] as $slide) {
+                    $slideBackground = isset($slide['background_color']) && preg_match('/^#[0-9a-fA-F]{6}$/D', $slide['background_color']) ? $slide['background_color'] : $nodeBackground;
+                    if (!empty($slide['background_image']['url']) || !$slideBackground) continue;
+                    foreach (['heading_color', 'description_color'] as $color) if (isset($s[$color]) && preg_match('/^#[0-9a-fA-F]{6}$/D', $s[$color])) $contrasts[] = DesignDirection::contrast($s[$color], $slideBackground);
                 }
                 foreach (['image', 'background_image', 'bg_image'] as $field) if (!empty($s[$field]['id'])) $images[] = $s[$field]['id'];
                 foreach (['carousel', 'wp_gallery', 'gallery'] as $field) foreach ($s[$field] ?? [] as $image) if (!empty($image['id'])) $images[] = $image['id'];

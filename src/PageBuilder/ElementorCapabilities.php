@@ -133,6 +133,7 @@ final class ElementorCapabilities
     {
         $widgets = $this->widgets();
         return ['core_version' => defined('ELEMENTOR_VERSION') ? ELEMENTOR_VERSION : '',
+            'providers' => self::providers(),
             'widgets' => $widgets, 'widget_briefs' => array_intersect_key(WidgetContracts::briefs(), array_flip($widgets)),
             'fallbacks' => WidgetContracts::fallbacks(), 'atomic_authoring' => false,
             'hover_transform' => (bool) $this->control('container', '_transform_translateY_effect_hover'),

@@ -5,6 +5,7 @@ use CortAIStudio\PageBuilder\ClassicWidgets;
 use CortAIStudio\PageBuilder\DraftForm;
 use CortAIStudio\PageBuilder\ElementorCapabilities;
 use CortAIStudio\PageBuilder\WidgetContracts;
+use CortAIStudio\PageBuilder\ElementorAdapter;
 
 if (PHP_SAPI !== 'cli' || !defined('CORT_AI_PB_TEST_INSTALLATION') || CORT_AI_PB_TEST_INSTALLATION !== true || !function_exists(__NAMESPACE__ . '\\test')) exit;
 
@@ -107,7 +108,7 @@ test('Draft forms reject submissions until configured and do not change ordinary
     $node = array_values(array_filter(flatten($compiled['elements']), static fn(array $n): bool => ($n['widgetType'] ?? '') === 'form'))[0];
     $widget = \Elementor\Plugin::$instance->elements_manager->create_element_instance($node);
     $settings = $widget->get_settings_for_display();
-    $form = ['id' => $node['id'], 'settings' => $settings];
+    $form = ['id' => $node['id'], 'widgetType' => 'form', 'settings' => $settings];
     $record = new \ElementorPro\Modules\Forms\Classes\Form_Record(['cort_field_1' => 'Example', 'cort_field_2' => 'example@example.test'], $form);
     $handler = new \ElementorPro\Modules\Forms\Classes\Ajax_Handler();
     check(!$record->validate($handler) && isset($handler->errors['cort_ai_configuration']), 'Native form validation did not block an unconfigured AI form.');
@@ -129,4 +130,40 @@ test('Mixed/typed Atomic data is rejected even with classic-looking widget names
     $props = $compiled['elements']; $props[0]['props'] = [];
     check(is_wp_error($adapter->validate($props)), 'Atomic props node was accepted.');
     check($adapter->validate($compiled['elements']) === true, 'Valid classic data was rejected.');
+});
+
+test('Composite widget data, style tokens and media survive preview, approval and exact restoration', function () use ($adapter, $service, $repo, &$cafeMedia, &$nextPlan) {
+    $caps = new ElementorCapabilities();
+    $input = composite_widget('icon-list', $cafeMedia);
+    $plan = composite_plan($input);
+    $plan['sections'][0]['columns'][0]['widgets'][] = composite_widget($caps->status('call-to-action')['authoring'] ? 'call-to-action' : 'accordion', $cafeMedia);
+    $original = visual_compile($plan, $cafeMedia, 'flexbox', direction());
+    $saved = visual_save($original['elements'], 'Composite source for restoration');
+    wp_update_post(['ID' => $saved['id'], 'post_status' => 'publish']);
+    $before = usable($adapter->snapshot($saved['id']));
+    release_cooldown(); $nextPlan = plan();
+    $row = finish($service, $repo, usable($service->start(options('add', $saved['id']))));
+    check($row['status'] === 'preview' && $adapter->fingerprint(usable($adapter->snapshot($saved['id']))) === $adapter->fingerprint($before), 'Composite source changed before approval.');
+    $row = approve($service, $row);
+    check($row['status'] === 'applied', wp_json_encode($row['warnings']));
+    $after = usable($adapter->snapshot($saved['id']));
+    check(ElementorAdapter::hash($after['elements'][0]) === ElementorAdapter::hash($before['elements'][0]), 'Existing repeater/widget styles or IDs changed.');
+    $row = usable($service->restore($row['id'], ['approved' => true]));
+    check($row['status'] === 'restored' && ElementorAdapter::hash(usable($adapter->snapshot($saved['id']))['elements']) === ElementorAdapter::hash($before['elements']), 'Composite backup did not restore exactly.');
+});
+
+test('A provider change invalidates the reviewed preview without becoming an authoring prerequisite', function () use ($adapter, $service, $repo, &$nextPlan) {
+    $providers = ElementorCapabilities::providers();
+    if (!$providers['pro_elements']['detected']) { check(isset($adapter->design()['capabilities']['providers']), 'Provider fingerprint metadata missing.'); return; }
+    release_cooldown(); $nextPlan = plan();
+    $row = finish($service, $repo, usable($service->start(options())));
+    check($row['status'] === 'preview' && $service->mark_reviewed($row['id'], $row['preview_hash']), 'Provider-change preview was not ready.');
+    $plugins = get_option('active_plugins');
+    try {
+        update_option('active_plugins', array_values(array_filter($plugins, static fn(string $file): bool => !str_contains($file, 'pro-elements'))));
+        // Already registered runtime widgets stay usable: metadata/branding does not grant eligibility.
+        check((new ElementorCapabilities())->status('call-to-action')['authoring'], 'Provider branding became an authoring prerequisite.');
+        $result = usable($service->approve($row['id'], ['approved' => true, 'preview_hash' => $row['preview_hash']]));
+        check($result['status'] === 'failed' && !$result['page_id'] && get_post_meta($row['preview_id'], '_cort_ai_pb_preview', true), 'Changed provider configuration did not invalidate the old preview.');
+    } finally { update_option('active_plugins', $plugins); }
 });

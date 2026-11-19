@@ -16,6 +16,7 @@ assert.equal(admin.status, 200);
 const html = await admin.text();
 assert.ok(html.includes('data-page-builder') && html.includes('page-builder.js'), 'Page Builder UI/assets missing.');
 assert.ok(html.includes('name="document_layout"') && html.includes('name="reuse_media"') && html.includes('data-design-report'), 'Visual planning/layout controls missing.');
+assert.ok(html.includes('data-compatibility-panel') && html.includes('data-compatible-widgets'), 'Capability inventory panel missing.');
 assert.ok(!html.includes('sk-cort-ai-isolated-test-key'), 'API key appeared in the HTML.');
 const config = JSON.parse(html.match(/window\.CortAIPageBuilder = (\{.*?\});/s)?.[1] || '{}');
 assert.ok(config.root && config.nonce, 'Admin REST configuration missing.');
@@ -52,6 +53,12 @@ async function review(row) {
 assert.equal((await request('status', 'GET', undefined, false)).response.status, 403, 'Missing REST nonce accepted.');
 const state = await ok('status');
 assert.equal(state.elementor.supported, true);
+assert.equal(state.elementor.atomic, false, 'Atomic must remain excluded.');
+assert.ok(state.elementor.widget_catalog.some((widget) => widget.name === 'counter' && widget.authoring), 'Actual classic-widget contracts missing from the admin API.');
+if (state.elementor.providers?.pro_elements?.detected) {
+    assert.equal(state.elementor.providers.elementor_pro.detected, false, 'PRO Elements was mislabeled as official Pro.');
+    assert.ok(state.elementor.widget_catalog.some((widget) => widget.name === 'form' && widget.authoring), 'Available PRO Elements Form contract missing.');
+}
 if (state.current) await ok(`operations/${state.current.id}/discard`, 'POST');
 const options = {request_id: randomUUID(), page_id: 0, operation: 'create', title: 'HTTP native preview test', slug: 'http-native-preview-test', instructions: 'Create native test sections for a standalone landing page.', model: Object.keys(config.efforts)[0], effort: 'medium', image_count: 0, media_ids: [], document_layout: 'elementor_canvas'};
 let row = await finish(await ok('operations', 'POST', options));

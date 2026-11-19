@@ -216,9 +216,9 @@ final class VisualCompiler
         $fallback = !$status['authoring'] || ($this->direction['motion'] === 'none' && in_array($type, ['animated-headline', 'flip-box'], true));
         $entries = ClassicWidgets::entries($input);
         if (is_wp_error($entries)) return $entries;
+        if (in_array($type, ['gallery', 'image-gallery'], true) && (!is_array($input['items'] ?? null) || !array_is_list($input['items']) || !$input['items'] || count($input['items']) > 8 || count(array_filter($input['items'], 'is_string')) !== count($input['items']))) return $this->error();
         if ($type === 'slides' && !$this->caps->field($type, 'slides', 'background_image')) foreach ($entries as $entry) if ($entry['media_ref'] !== '' || $entry['image_subject'] !== '') $fallback = true;
         if (in_array($type, ['gallery', 'image-gallery'], true) && $status['authoring']) {
-            if (!is_array($input['items'] ?? null) || !array_is_list($input['items']) || count($input['items']) > 8) return $this->error();
             // Native galleries require attachment IDs. A dry-run selector leaves the real assignments untouched.
             $picker = clone $this->media;
             foreach ($input['items'] ?? [] as $ref) {
@@ -347,11 +347,13 @@ final class VisualCompiler
         }
         foreach (match ($type) {
             'icon-list' => [['body', 18, 'icon_typography']],
-            'accordion', 'toggle', 'tabs' => [['card_title', 22, 'title_typography'], ['body', 18, 'content_typography']],
+            'accordion', 'toggle' => [['card_title', 22, 'title_typography'], ['body', 18, 'content_typography']],
+            'tabs' => [['card_title', 22, 'tab_typography'], ['body', 18, 'content_typography']],
             'counter' => [['display', 48, 'number_typography'], ['body', 18, 'title_typography']],
             'slides' => [['title', 36, 'heading_typography'], ['body', 18, 'description_typography']],
             'form' => [['body', 18, 'field_typography'], ['body', 16, 'label_typography']],
-            'animated-headline' => [[$role, $size, 'typography']],
+            'flip-box' => [['card_title', 26, 'title_typography_a'], ['card_title', 26, 'title_typography_b'], ['body', 18, 'description_typography_a'], ['body', 18, 'description_typography_b']],
+            'animated-headline' => [[$role, $size, 'title_typography'], [$role, $size, 'words_typography']],
             default => [],
         } as [$visualRole, $visualSize, $group]) $this->typography($settings, $type, $visualRole, $visualSize, $group);
         if ($type === 'button') {
@@ -389,7 +391,7 @@ final class VisualCompiler
         $weight = $this->kit['fonts'][$font]['weight'] ?? '';
         $button = in_array($role, ['primary_button', 'secondary_button'], true);
         $this->put($settings, $type, $group . '_font_weight', $weight ?: ($heading ? '700' : ($button ? '600' : '400')));
-        $this->responsive($settings, $type, $group . '_font_size', [self::slider($size), self::slider(min($size, $role === 'display' ? 48 : 34)), self::slider(min($size, $role === 'display' ? 38 : ($role === 'title' ? 29 : 18)))], true);
+        if ($this->caps->control($type, $group . '_font_size')) $this->responsive($settings, $type, $group . '_font_size', [self::slider($size), self::slider(min($size, $role === 'display' ? 48 : 34)), self::slider(min($size, $role === 'display' ? 38 : ($role === 'title' ? 29 : 18)))]);
         $this->put($settings, $type, $group . '_line_height', self::slider($heading || $button ? 1.18 : 1.65, 'em'));
         $this->put($settings, $type, $group . '_letter_spacing', self::slider($role === 'display' ? -.8 : ($role === 'eyebrow' ? 1.8 : ($heading ? -.35 : 0))));
     }

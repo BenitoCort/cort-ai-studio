@@ -5,7 +5,7 @@ This release adds a native Elementor page workflow to Cort AI Studio. Blog Write
 ## Files and responsibilities
 
 ```text
-cort-ai-studio.php             Namespace-aware autoloader; version 1.2.0
+cort-ai-studio.php             Namespace-aware autoloader; version 1.3.0
 src/Plugin.php                 Registers the additional module
 src/Admin.php                  Shared dashboard navigation URLs
 src/PageBuilder/
@@ -19,7 +19,10 @@ src/PageBuilder/
   Blueprint.php                AI schema, constrained changes, native widget compilation
   DesignPlanning.php           Optional plan-engine contract for the visual planning stage
   DesignDirection.php          Strict art-direction schema, palette/scale validation
-  ElementorCapabilities.php    Installed widget and native control contracts, including Pro gates
+  ElementorCapabilities.php    Registered classic widgets, control contracts, provider metadata
+  WidgetContracts.php          Reviewed controls, repeater fields, AI briefs and fallback descriptions
+  ClassicWidgets.php           Bounded native content adapters for composite/advanced classic widgets
+  DraftForm.php                Blocks unconfigured generated forms through native validation hooks
   VisualCompiler.php           Native visual roles, compositions and responsive controls
   MediaSelection.php           Context scoring, deduplication and native placeholders
   DesignQuality.php            Deterministic checks before saving generated compositions
@@ -32,6 +35,8 @@ assets/page-design.css         Scoped focus and reduced-motion accessibility gua
 tests/fixtures.php             Synthetic page plans
 tests/visual-fixtures.php      Five-section cafe test content, not a production template
 tests/visual.php               Native visual CSS, patterns, media and document-layout checks
+tests/classic-widgets.php      Composite widgets, PRO Elements, form guard, Atomic and restoration
+tests/widget-capabilities.php  Provider-independent contract tests without official Pro constants
 tests/integration.php          Guarded disposable-WordPress integration suite
 tests/compatibility.php        Missing/unsupported Elementor feature-gate checks
 tests/http-preview.mjs         Real HTTP/frontend preview and approval checks
@@ -70,9 +75,9 @@ The browser advances generation in separate REST requests. Closing it pauses sub
 | Reorder Sections | Move a selected top-level section without rebuilding its contents. Position controls are authoritative; free text is not interpreted for this deterministic operation. |
 | Preview / Apply / Restore | Real Elementor frontend preview, explicit approval, journaled original snapshot, conflict detection and restoration. |
 
-Generated Core widgets are `heading`, `text-editor`, `button`, `image`, `icon`, `icon-box`, `image-box` and `image-carousel`, when registered. Galleries use responsive native image grids or carousels; the basic Core gallery's nonresponsive column control is not offered for generation. Service cards use native columns/containers plus widgets; FAQs use headings and paragraphs. There is no giant HTML widget and no fake testimonial generator. Missing business information must be omitted. AI output still requires editorial review.
+Generation can use twenty reviewed classic widget contracts when registered: `heading`, `text-editor`, `button`, `image`, `icon`, `icon-box`, `image-box`, `icon-list`, `accordion`, `toggle`, `tabs`, `counter`, `image-carousel`, `image-gallery`, `gallery`, `call-to-action`, `flip-box`, `animated-headline`, `slides` and `form`. Their actual native controls/repeater fields determine eligibility, independently of provider branding. There is no giant HTML widget and no fake testimonial/statistics generator. Missing business information must be omitted. AI output still requires editorial review.
 
-New compositions use Flexbox when Elementor's container feature is active and classic sections/columns otherwise. Flexbox uses native `flex_gap`, gap-aware proportional widths and responsive wrapping. Classic uses a native section/column/inner-section hierarchy, proportional widths, column margins and widget spacing. Existing deeper hierarchies can be inspected and preserved, subject to validation, limits and available widgets. Third-party widgets are not generated. Pro Call to Action and Animated Headline are offered only if registered controls match explicit ID/type contracts; their real Pro rendering remains unverified. Existing registered widgets can remain unchanged only if Elementor preserves their data exactly. Missing widget plugins block writes. Dynamic fields are not editable through content updates.
+New compositions use Flexbox when Elementor's container feature is active and classic sections/columns otherwise. Flexbox uses native `flex_gap`, gap-aware proportional widths and responsive wrapping. Classic uses a native section/column/inner-section hierarchy, proportional widths, column margins and widget spacing. Existing deeper hierarchies can be inspected and preserved, subject to validation, limits and available widgets. Any provider can supply a matching reviewed widget contract, including PRO Elements. Other registered classic widgets are inventoried and can remain unchanged if Elementor preserves their data exactly; automatic generation needs an explicit content adapter. Missing widget plugins block writes. Scoped AI content updates remain limited to the existing supported text/link/image fields; composite repeaters and integration settings are editable in Elementor.
 
 ## Visual generation in 1.2
 
@@ -80,7 +85,7 @@ New compositions use Flexbox when Elementor's container feature is active and cl
 
 The eleven bounded patterns are centered, split, background, overlay, asymmetric, content, features, cards, gallery, highlight and CTA. Their column order, proportions, content and media come from each business brief. Native settings implement backgrounds/overlays/gradients, radius, normal/hover shadows, image crops, line height, letter spacing, button states and responsive padding. Card headings have a compact role. Mobile buttons can fill their column. Carousels use three/two/one visible slides and no autoplay.
 
-Motion is `none` or `subtle`: native entrance fades with bounded stagger, native image hover and capability-gated card transforms. Popover values are taken from the actual control contract, including the transform class trigger. The small frontend stylesheet adds focus indicators and respects `prefers-reduced-motion`; it contains no model-generated design CSS. Slides and advanced scrolling/parallax Motion Effects are detected where present but are not authored. Atomic remains read-only.
+Motion is `none` or `subtle`: native entrance fades with bounded stagger, native image hover and capability-gated card transforms. Popover/switcher values are taken from native control contracts. Motion-free styles use static alternatives for Flip Box/Animated Headline and counters start at their final value. Carousels/Slides do not autoplay. The small frontend stylesheet adds focus indicators and respects `prefers-reduced-motion`; it contains no model-generated design CSS. Advanced scrolling/parallax Motion Effects are not authored. Atomic remains excluded.
 
 Media selection uses title, alt, description, requested subject and role. Optional automatic library searches are bounded and run against the initial brief and later component subjects. Only readable local image attachments are candidates. Attachments and canonical file URLs are deduplicated across generated components; users can explicitly allow reuse. This is metadata matching, not image recognition or pixel-level duplicate detection. Add descriptive media metadata and review the chosen photographs. Missing media uses Elementor's official placeholder, an image-widget caption where applicable and a report warning. Generated images remain optional, with at most two authorized slots.
 
@@ -89,6 +94,22 @@ New-page layout choices are Default, Elementor Full Width and Elementor Canvas, 
 `DesignQuality` checks exactly one generated H1 on create, skipped heading levels, duplicate/newly colliding anchors, fragment destinations, solid text contrast, composition variety, responsive/styled element counts, distinct images and placeholders. Native controls/widgets are checked by the compiler before saving. Spacing, proportions and typography are bounded at planning/compilation. The report deliberately does not assign a visual-quality score: photographic contrast, semantic image relevance, actual wrapping and theme/browser behavior require the real preview. A saved JSON round trip alone does not prove a control affects CSS.
 
 ## Compatibility and official APIs
+
+### Capability-based classic widgets in 1.3
+
+The previous advanced-widget gate in `ElementorCapabilities` required `ELEMENTOR_PRO_VERSION`, and the adapter/admin displayed that constant as an official-Pro version. PRO Elements also defines it, so it was unsuitable for provider identity or authoring eligibility. No production eligibility check now requires that constant or a plugin name. Native `_elementor_pro_version` metadata is still preserved with backups.
+
+`widgets_manager->get_widget_types()` supplies the actual runtime inventory. `WidgetContracts` checks control IDs/types and repeater field IDs/types; `ElementorCapabilities::set()` writes only exposed controls and checks enum/toggle values where available. Frontend control metadata can omit option lists, so the known Animated Headline highlight default is accepted as evidence. Carousel autoplay supports the actual Select/Switcher variants. Optional typography properties absent from a group are inherited instead of inventing controls. `ClassicWidgets` maps only bounded, sanitized content; the model never supplies raw native settings.
+
+The panel separates provider information from capability: Core version, active PRO Elements/official Pro metadata, Classic/Flexbox support, generation-ready widgets, all other registered/unavailable widgets, fallback descriptions and unsupported features. Provider versions also participate in preview fingerprints so changing the provider invalidates a previously reviewed proposal. An unidentified compatible provider does not lose eligibility. Installed plugins are not activated or changed by this module.
+
+The fourteen reviewed Core contracts cover Heading, Text Editor, Image, Button, Icon, Icon Box, Image Box, Icon List, Accordion, Toggle, Tabs, Counter, Image Carousel and Basic Gallery. Six additional contracts cover Advanced Gallery, Call to Action, Flip Box, Animated Headline, Slides and Form. They are enabled only when actually registered and compatible, including through PRO Elements. Other registered widgets need an explicit authoring adapter; they are not blindly serialized.
+
+Composite content uses up to eight bounded `entries` or form fields. Tabs/accordions receive plain titles and escaped paragraph content. Counters accept bounded confirmed integer values with prefix/suffix. Advanced Gallery has native 3/2/1 columns; Basic Gallery keeps native/theme tablet behavior and reports that limitation. Image-required galleries fall back to a compatible carousel when native attachment data is unavailable. Missing CTA/Accordion/Tabs/Slides can use editable primitive alternatives. Flip Box/Animated Headline use static alternatives for motion-free designs. Slides with photos use a static image/text/button alternative if their native repeater image field is not exposed. Native Slides never autoplay.
+
+Forms are classic native widgets with text/email/tel/textarea fields. New forms explicitly clear the provider's default submit actions, which can include email/database storage. They have a `cort-ai-draft-form` class and a native form-validation hook prevents successful submission until actions are configured in Elementor. The native hook name is shared by PRO Elements and the compatible Forms API; it does not require the official plugin. Existing ordinary forms are untouched. Recipients, storage, webhooks, CRM/payment/upload fields and external integrations are not generated. Configure legitimate delivery, privacy and spam controls manually in Elementor before publishing a form.
+
+Atomic is excluded by native class capabilities, widget IDs, node structure and typed `$$type` properties. Mixed Atomic/classic pages fail closed. New data remains V3 widgets with classic sections or Flexbox containers. No Atomic global setting, component, conversion or typed-props schema is used. The Core version eligibility range remains 3.21–4.4 pending separate review of later releases; the presence of a newer Atomic implementation does not grant support.
 
 The runtime write gate accepts Elementor **3.21.x through 4.4.x**, only for classic/Flexbox document structures and available public methods. Releases below 3.21 or at/above 4.5 are disabled pending review. This version range is an eligibility gate, not certification of every patch release, theme or addon.
 
@@ -189,3 +210,23 @@ These are structure, CSS and metadata results. Media fixtures are synthetic JPEG
 Additional primary references used for 1.2: [responsive controls](https://developers.elementor.com/docs/editor-controls/responsive-control), [native box shadow group](https://developers.elementor.com/docs/editor-controls/group-control-box-shadow), [page settings/layouts](https://elementor.com/help/page-settings/), [motion effects and accessibility](https://elementor.com/help/motion-effects/), [Core/Pro capabilities](https://elementor.com/help/elementor-pro-vs-free/). The actual installed Core control definitions and emitted CSS were checked as well; documentation alone is not used to assert a native control exists.
 
 Live OpenAI generation, site-specific themes/addons/Pro widgets, custom breakpoints, every supported-version patch and visual behavior across real browsers/devices require staging validation with the site's own configuration. They are not implied by passing mocked-provider integration tests.
+
+### Recorded 1.3 compatibility validation
+
+| Elementor Core | Additional provider | Integration cases | Generation-ready contracts |
+| --- | --- | --- | --- |
+| 3.21.5 | None | 38/38 passed | 14 Core |
+| 3.30.0 | None | 38/38 passed | 14 Core |
+| 4.4.0 | None | 38/38 passed | 14 Core |
+| 3.30.0 | PRO Elements 3.29.0 | 38/38 passed | 20 |
+| 4.4.0 | PRO Elements 4.3.2 | 38/38 passed | 20 |
+
+The 190 case executions used WordPress 7.1.4/PHP 8.2.12 and the explicitly disposable database. Existing local PRO Elements copies were tested without changing their code or the source sites. Provider versions were activated in separate PHP requests and their normal database migrations initialized in the test installation. Tests expect unavailable advanced widgets in Core-only cases; native rendering of all six advanced adapters is exercised in both provider configurations, in both classic and Flexbox layouts.
+
+Additional coverage includes native repeater field compatibility, responsive Advanced Gallery, Counter motion-free output, Slides media retention/fallback, actual native Form_Record validation blocking unconfigured forms, ordinary-form isolation, composite-widget/style preservation through approval and exact restore, and provider changes invalidating a reviewed preview. `tests/widget-capabilities.php` separately proves a registered CTA can be authored without any official Pro constant and rejects incompatible control/repeater fields and Atomic classes. The real HTTP suite passed with Core 4.4.0 + PRO Elements 4.3.2, checking the inventory API/admin markup alongside existing preview, Canvas, nonce, approval and restoration behavior.
+
+PHP/JavaScript syntax checks and SHA-256 comparisons of the thirteen shared Blog Writer/API/media/usage files passed. Provider plugins are not bundled in the ZIP, and no real site database, OpenAI billing or form email delivery was used. Vendor MCP deprecation notices in the disposable installation are outside this module; Cort AI Studio does not enable or invoke that integration.
+
+Limits remain explicit: the Core eligibility range is 3.21–4.4; individual native controls may vary and trigger alternatives; unrelated registered widget IDs need adapters; Basic Gallery's tablet columns follow native/theme behavior; form actions/integrations and composite content editing require Elementor. Official Elementor Pro was not separately tested. Live OpenAI choice of the expanded schema and browser/device visual QA remain separate staging checks. Atomic generation/editing/conversion is excluded.
+
+Primary references: the provider's own [PRO Elements feature description](https://proelements.org/) and Elementor's [classic widget data/control structure](https://developers.elementor.com/docs/data-structure/widget-element). Native local PHP definitions and actual document save/render results, rather than product names, determined these contracts.
