@@ -19,5 +19,6 @@ interface Adapter
     public function design(): array;
     public function create_preview(array $operation): int|WP_Error;
     public function restore_snapshot(int $id, array $snapshot): bool|WP_Error;
+    public function matches_backup(array $snapshot, array $backup): bool;
     public function metadata_fingerprint(array $meta): string;
 }

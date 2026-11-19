@@ -35,11 +35,12 @@ $pending = $repo->active($admin->ID);
 if ($pending && in_array($pending['status'], ['applying', 'restoring'], true)) $service->advance($pending['id']);
 $pending = $repo->active($admin->ID);
 if ($pending) $service->discard($pending['id']);
-$calls = []; $nextPlan = plan(); $nextArticle = null; $transportFailure = false; $imageFailure = true;
-add_filter('pre_http_request', function ($pre, $args, $url) use (&$calls, &$nextPlan, &$nextArticle, &$transportFailure, &$imageFailure) {
+$calls = []; $nextPlan = plan(); $nextArticle = null; $transportFailure = false; $imageFailure = true; $modelUnavailable = false;
+add_filter('pre_http_request', function ($pre, $args, $url) use (&$calls, &$nextPlan, &$nextArticle, &$transportFailure, &$imageFailure, &$modelUnavailable) {
     if (!str_starts_with($url, 'https://api.openai.com/v1')) return new \WP_Error('test_network_blocked', 'External networking disabled in tests.');
     $calls[] = [$args['method'], $url];
     if ($transportFailure) return new \WP_Error('test_interrupted', 'Simulated transport interruption.');
+    if ($modelUnavailable) return ['response' => ['code' => 404], 'body' => '{"error":{"code":"model_not_found","message":"Raw provider details"}}', 'headers' => []];
     if (str_ends_with($url, '/images/generations')) {
         if ($imageFailure) return ['response' => ['code' => 500], 'body' => '{"error":{"code":"server_error"}}', 'headers' => []];
         $jpeg = getenv('CORT_AI_TEST_JPEG');
@@ -103,7 +104,7 @@ test('Classic sections/columns save as native Elementor elements', function () u
     usable($adapter->save($document->get_post()->ID, $data['elements']));
     check($adapter->inspect($document->get_post()->ID)['layout'] === 'classic', 'Classic hierarchy missing.');
 });
-test('AI page generation, enforced preview approval, and draft-only creation', function () use ($service, $repo, &$nextPlan, &$newId) {
+test('AI page generation, enforced preview approval, and draft-only creation', function () use ($service, $repo, $adapter, &$nextPlan, &$newId) {
     release_cooldown(); $nextPlan = plan();
     $row = finish($service, $repo, usable($service->start(options())));
     check($row['status'] === 'preview', json_encode($row['warnings']));
@@ -119,6 +120,9 @@ test('AI page generation, enforced preview approval, and draft-only creation', f
     check($row['status'] === 'applied', json_encode($row['warnings']));
     $newId = $row['page_id'];
     check(get_post_status($newId) === 'draft' && !get_post_meta($newId, '_cort_ai_pb_preview', true), 'New page must remain a final editable draft.');
+    check(get_post($newId)->post_name === 'isolated-ai-page', 'The requested slug was not saved.');
+    $elements = json_decode(get_post_meta($newId, '_elementor_data', true), true, 64, JSON_THROW_ON_ERROR);
+    check($elements[0]['elType'] === ($adapter->availability()['containers'] ? 'container' : 'section') && $adapter->validate($elements) === true, 'The draft lacks valid native data for the detected layout.');
     check($service->approve($row['id'], ['approved' => true])['page_id'] === $newId, 'Approval must be idempotent.');
 });
 test('Add section preserves published original until approval and restores exact backup', function () use ($service, $repo, $adapter, &$nextPlan, &$sourceId) {
@@ -152,12 +156,36 @@ test('Text update keeps widget IDs and responsive styling intact', function () u
 test('Remove and reorder use deterministic proposals without API charges', function () use ($service, $repo, $adapter, &$calls, &$sourceId) {
     foreach (['reorder', 'remove'] as $op) {
         release_cooldown(); $before = usable($adapter->snapshot($sourceId)); $count = count($calls);
-        $row = finish($service, $repo, usable($service->start(options($op, $sourceId, ['section_id' => $before['elements'][0]['id'], 'position' => 'end']))));
+        $row = finish($service, $repo, usable($service->start(options($op, $sourceId, [
+            'section_id' => $before['elements'][0]['id'],
+            // A previously selected position can still be submitted after switching to Remove.
+            'position' => $op === 'remove' ? 'before' : 'end',
+        ]))));
         check($row['status'] === 'preview', json_encode($row['warnings'])); check(count($calls) === $count, 'Deterministic operation called OpenAI.');
         $row = approve($service, $row); check($row['status'] === 'applied', json_encode($row['warnings']));
         $row = usable($service->restore($row['id'], ['approved' => true])); check($row['status'] === 'restored', json_encode($row['warnings']));
     }
 });
+if (class_exists(\Elementor\Modules\AtomicWidgets\Utils\Custom_Attributes_Trust::class)) {
+    test('Apply and restore leave Elementor’s current-editor metadata under native control', function () use ($service, $repo, $adapter, &$sourceId) {
+        $key = '_elementor_data_last_editor';
+        $editor = (string) get_current_user_id();
+        foreach ([null, '0'] as $previous) {
+            // Exercise pages saved before the marker existed and pages saved by another editor.
+            if ($previous === null) delete_post_meta($sourceId, $key);
+            else update_post_meta($sourceId, $key, $previous);
+            release_cooldown();
+            $before = usable($adapter->snapshot($sourceId));
+            $row = finish($service, $repo, usable($service->start(options('reorder', $sourceId, ['section_id' => $before['elements'][0]['id']]))));
+            check($row['status'] === 'preview' && get_post_meta($row['preview_id'], $key) === [$editor], 'Preview did not record its own editor.');
+            $row = approve($service, $row);
+            check($row['status'] === 'applied' && get_post_meta($sourceId, $key) === [$editor], 'Application rejected native editor metadata.');
+            $row = usable($service->restore($row['id'], ['approved' => true]));
+            check($row['status'] === 'restored' && $adapter->matches_backup(usable($adapter->snapshot($sourceId)), $before), 'The backed-up page was not restored.');
+            check(get_post_meta($sourceId, $key) === [$editor], 'Restore replaced or duplicated the native editor record.');
+        }
+    });
+}
 test('Concurrency conflict refuses application without overwriting an editor', function () use ($service, $repo, &$nextPlan, &$sourceId) {
     release_cooldown(); $nextPlan = plan();
     $row = finish($service, $repo, usable($service->start(options('add', $sourceId))));
@@ -251,7 +279,36 @@ if (getenv('CORT_AI_TEST_JPEG') && is_file(getenv('CORT_AI_TEST_JPEG'))) test('G
 else echo "SKIP successful image persistence: set CORT_AI_TEST_JPEG to a disposable JPEG fixture.\n";
 test('Budget enforcement prevents an unaffordable API call', function () use ($service, $settings, &$calls) {
     release_cooldown(); $config = $settings->read(); $config['budget'] = 0.000001; $settings->save($config); $count = count($calls);
-    check(is_wp_error($service->start(options())), 'Budget not enforced.'); check(count($calls) === $count, 'Unaffordable call was sent.'); $config['budget'] = 25; $settings->save($config);
+    check(is_wp_error($error = $service->start(options())) && $error->get_error_code() === 'cort_ai_pb_budget', 'Budget not enforced or described.'); check(count($calls) === $count, 'Unaffordable call was sent.'); $config['budget'] = 25; $settings->save($config);
+});
+test('Page Builder preflight reports the specific missing or invalid input', function () use ($service, $settings, &$calls) {
+    release_cooldown();
+    $count = count($calls);
+    foreach (['title' => '', 'instructions' => ' ', 'operation' => 'redesign', 'model' => 'unknown-model', 'effort' => 'unknown-effort'] as $field => $value) {
+        $response = $service->start(options('create', 0, [$field => $value]));
+        $code = $field === 'effort' ? 'reasoning' : $field;
+        check(is_wp_error($response) && $response->get_error_code() === 'cort_ai_pb_' . $code, 'No specific validation error for ' . $field);
+    }
+    $settings->save_key('', true);
+    try {
+        check($service->status()['api_key_configured'] === false, 'Status reported a missing API key as configured.');
+        $response = $service->start(options());
+        check(is_wp_error($response) && $response->get_error_code() === 'cort_ai_pb_key', 'Missing API key did not block generation.');
+        check(count($calls) === $count, 'Preflight validation made a provider call.');
+    } finally {
+        $settings->save_key('sk-cort-ai-isolated-test-key', false);
+    }
+});
+test('An unavailable OpenAI model is reported without provider response details', function () use ($service, $repo, &$modelUnavailable) {
+    release_cooldown();
+    $modelUnavailable = true;
+    try {
+        $row = finish($service, $repo, usable($service->start(options())));
+        check($row['status'] === 'failed' && str_contains(implode(' ', $row['warnings']), 'model is unavailable'), 'The provider model error was not explained.');
+        check(!str_contains(wp_json_encode($row), 'Raw provider details'), 'Raw provider error leaked.');
+    } finally {
+        $modelUnavailable = false;
+    }
 });
 test('REST capabilities and nonces protect Page Builder', function () use ($admin, $restInitHooks) {
     // Elementor's internal simulated REST server removes rest_api_init callbacks.
@@ -266,7 +323,21 @@ test('REST capabilities and nonces protect Page Builder', function () use ($admi
     $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
     check($server->dispatch($request)->get_status() === 403, 'Subscriber accessed Page Builder.'); wp_set_current_user($admin->ID);
     $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
-    check($server->dispatch($request)->get_status() === 200, 'Authorized admin cannot inspect status.');
+    $status = $server->dispatch($request);
+    check($status->get_status() === 200 && $status->get_data()['api_key_configured'] && $status->get_data()['can_create'], 'Admin page-creation status is incorrect.');
+    $page_type = get_post_type_object('page');
+    $capability = $page_type->cap->create_posts;
+    $page_type->cap->create_posts = 'do_not_allow';
+    try {
+        check(!$server->dispatch($request)->get_data()['can_create'], 'Status did not honor the WordPress page creation capability.');
+        $create = new \WP_REST_Request('POST', '/cort-ai-studio/v1/page-builder/operations');
+        $create->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        $create->set_header('Content-Type', 'application/json');
+        $create->set_body(wp_json_encode(options()));
+        check($server->dispatch($create)->get_status() === 403, 'A user without page creation capability started a proposal.');
+    } finally {
+        $page_type->cap->create_posts = $capability;
+    }
 });
 test('Blog Writer request/schema and native draft pipeline remain usable', function () use (&$nextArticle, $api) {
     $settings = (new Settings())->read(); $article = new \CortAIStudio\Article();

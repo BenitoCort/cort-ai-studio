@@ -56,7 +56,9 @@ final class Module
         wp_enqueue_style('cort-ai-studio-admin', plugins_url('assets/admin.css', CORT_AI_STUDIO_FILE), [], CORT_AI_STUDIO_VERSION);
         wp_enqueue_style('cort-ai-page-builder', plugins_url('assets/page-builder.css', CORT_AI_STUDIO_FILE), ['cort-ai-studio-admin'], CORT_AI_STUDIO_VERSION);
         if (current_user_can('upload_files')) wp_enqueue_media();
-        wp_enqueue_script('cort-ai-page-builder', plugins_url('assets/page-builder.js', CORT_AI_STUDIO_FILE), [], CORT_AI_STUDIO_VERSION, true);
+        $script = 'assets/page-builder.js';
+        $script_version = CORT_AI_STUDIO_VERSION . '.' . filemtime(dirname(__DIR__, 2) . '/' . $script);
+        wp_enqueue_script('cort-ai-page-builder', plugins_url($script, CORT_AI_STUDIO_FILE), [], $script_version, true);
         $efforts = [];
         foreach (Settings::models() as $model => $label) $efforts[$model] = Settings::efforts($model);
         wp_add_inline_script('cort-ai-page-builder', 'window.CortAIPageBuilder = ' . wp_json_encode([
@@ -64,9 +66,29 @@ final class Module
             'efforts' => $efforts,
             'strings' => [
                 'network' => __('The request could not be completed. Reload or resume the saved operation.', 'cort-ai-studio'),
+                'timeout' => __('WordPress took too long to respond. Try again or resume the saved operation.', 'cort-ai-studio'),
+                'http_error' => __('WordPress returned an unusable Page Builder response (HTTP %s).', 'cort-ai-studio'),
                 'session' => __('Your session expired. Reload this page.', 'cort-ai-studio'),
-                'loading' => __('Loading…', 'cort-ai-studio'), 'new_page' => __('Create New Page', 'cort-ai-studio'),
-                'select_section' => __('Select a section', 'cort-ai-studio'), 'preview_ready' => __('Proposal ready for review', 'cort-ai-studio'),
+                'loading' => __('Checking whether Page Builder can start a proposal…', 'cort-ai-studio'),
+                'working' => __('Waiting for the current Page Builder request…', 'cort-ai-studio'),
+                'loading_pages' => __('Loading existing pages…', 'cort-ai-studio'),
+                'pages_failed' => __('Could not load existing pages. %s', 'cort-ai-studio'),
+                'inspecting' => __('Checking the selected Elementor page…', 'cort-ai-studio'),
+                'pending_review' => __('Review and apply or discard your current proposal before generating another.', 'cort-ai-studio'),
+                'pending_generation' => __('Finish or discard your current proposal before generating another.', 'cort-ai-studio'),
+                'pending_write' => __('Finish verifying the current operation before generating another.', 'cort-ai-studio'),
+                'create_permission' => __('You do not have permission to create WordPress pages.', 'cort-ai-studio'),
+                'operation_required' => __('Select an operation supported for this page selection.', 'cort-ai-studio'),
+                'title_required' => __('Enter a page title.', 'cort-ai-studio'),
+                'instructions_required' => __('Enter AI instructions.', 'cort-ai-studio'),
+                'section_required' => __('Select an existing top-level section.', 'cort-ai-studio'),
+                'anchor_required' => __('Select a different section as the insertion anchor.', 'cort-ai-studio'),
+                'widgets_required' => __('No compatible classic widgets are registered for page generation.', 'cort-ai-studio'),
+                'key_required' => __('Configure your OpenAI API key in Cort AI Studio Settings, then retry the status check.', 'cort-ai-studio'),
+                'model_required' => __('Select a supported OpenAI model.', 'cort-ai-studio'),
+                'effort_required' => __('Select a reasoning level supported by the OpenAI model.', 'cort-ai-studio'),
+                'new_page' => __('Create New Page', 'cort-ai-studio'),
+                'select_section' => __('Select a section', 'cort-ai-studio'), 'preview' => __('Proposal ready for review', 'cort-ai-studio'),
                 'generating' => __('Generating proposal', 'cort-ai-studio'), 'applied' => __('Changes saved and validated', 'cort-ai-studio'),
                 'restored' => __('Previous version restored', 'cort-ai-studio'), 'failed' => __('Proposal could not finish', 'cort-ai-studio'),
                 'cancelled' => __('Proposal discarded', 'cort-ai-studio'), 'conflict' => __('Document changed; generate a fresh proposal', 'cort-ai-studio'),

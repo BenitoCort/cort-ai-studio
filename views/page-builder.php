@@ -20,7 +20,6 @@ defined('ABSPATH') || exit;
         <ul class="cort-pb-widget-list" data-unsupported-features></ul>
         <details><summary><?php esc_html_e('Other widgets and unavailable contracts', 'cort-ai-studio'); ?></summary><ul class="cort-pb-widget-list" data-other-widgets></ul></details>
     </details>
-    <p class="cort-ai-notice cort-ai-notice--error" data-error role="alert" hidden></p>
     <noscript><p><?php esc_html_e('Enable JavaScript to use AI Page Builder.', 'cort-ai-studio'); ?></p></noscript>
     <form data-pb-form>
         <fieldset data-form-fields disabled class="cort-pb-fieldset">
@@ -35,10 +34,10 @@ defined('ABSPATH') || exit;
                         <div class="cort-ai-field cort-ai-full">
                             <label for="pb-page"><?php esc_html_e('Page selection', 'cort-ai-studio'); ?></label>
                             <select id="pb-page" name="page_id"><option value="0"><?php esc_html_e('Create New Page', 'cort-ai-studio'); ?></option></select>
-                            <div class="cort-ai-actions"><button type="button" class="button-link" data-pages-prev disabled><?php esc_html_e('Previous', 'cort-ai-studio'); ?></button><span data-page-number></span><button type="button" class="button-link" data-pages-next disabled><?php esc_html_e('Next', 'cort-ai-studio'); ?></button></div>
+                            <div class="cort-ai-actions"><button type="button" class="button-link" data-pages-prev disabled><?php esc_html_e('Previous', 'cort-ai-studio'); ?></button><span data-page-number role="status"></span><button type="button" class="button-link" data-pages-next disabled><?php esc_html_e('Next', 'cort-ai-studio'); ?></button></div>
                         </div>
                         <div class="cort-ai-field" data-new-page><label for="pb-title"><?php esc_html_e('Page title', 'cort-ai-studio'); ?></label><input id="pb-title" name="title" maxlength="180" required></div>
-                        <div class="cort-ai-field" data-new-page><label for="pb-slug"><?php esc_html_e('Slug', 'cort-ai-studio'); ?></label><input id="pb-slug" name="slug" maxlength="180" placeholder="inventory-management"></div>
+                        <div class="cort-ai-field" data-new-page><label for="pb-slug"><?php esc_html_e('Slug (optional)', 'cort-ai-studio'); ?></label><input id="pb-slug" name="slug" maxlength="180" placeholder="inventory-management"></div>
                         <div class="cort-ai-field cort-ai-full" data-new-page>
                             <label for="pb-layout"><?php esc_html_e('Page layout', 'cort-ai-studio'); ?></label>
                             <select id="pb-layout" name="document_layout"><option value="auto"><?php esc_html_e('Plan from brief · new page only', 'cort-ai-studio'); ?></option><option value="default"><?php esc_html_e('Default · theme layout', 'cort-ai-studio'); ?></option><option value="elementor_header_footer"><?php esc_html_e('Elementor Full Width · keep header and footer', 'cort-ai-studio'); ?></option><option value="elementor_canvas"><?php esc_html_e('Elementor Canvas · standalone landing page', 'cort-ai-studio'); ?></option></select>
@@ -83,9 +82,15 @@ defined('ABSPATH') || exit;
                 </section>
             </div>
             <section class="cort-ai-card cort-pb-analysis" data-analysis hidden><h2><?php esc_html_e('Current page structure', 'cort-ai-studio'); ?></h2><p data-page-info></p><p data-page-issues class="cort-pb-issues"></p><div data-tree></div></section>
-            <div class="cort-ai-submit"><button type="submit" class="button button-primary button-hero" data-generate><?php esc_html_e('Generate / Preview Proposal', 'cort-ai-studio'); ?></button></div>
+            <div class="cort-ai-submit">
+                <button type="submit" class="button button-primary button-hero" data-generate aria-describedby="cort-pb-generation-status"><?php esc_html_e('Generate / Preview Proposal', 'cort-ai-studio'); ?></button>
+                <p id="cort-pb-generation-status" data-generation-status role="status"><?php esc_html_e('Loading Page Builder. If this message remains, reload the page and check that its JavaScript can run.', 'cort-ai-studio'); ?></p>
+                <button type="button" class="button" data-retry-status hidden><?php esc_html_e('Retry status check', 'cort-ai-studio'); ?></button>
+                <button type="button" class="button" data-current-proposal hidden><?php esc_html_e('Open current proposal', 'cort-ai-studio'); ?></button>
+            </div>
         </fieldset>
     </form>
+    <p class="cort-ai-notice cort-ai-notice--error" data-error role="alert" hidden></p>
     <section class="cort-ai-card cort-pb-result" data-result hidden aria-live="polite">
         <div class="cort-ai-section-heading"><h2 data-stage></h2><p data-summary></p></div>
         <div data-design-report class="cort-pb-design-report" hidden></div>

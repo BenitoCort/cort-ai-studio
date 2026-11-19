@@ -12,14 +12,20 @@ final class ElementorAdapter implements Adapter
     public const MAX_NODES = 650;
     public const WIDGETS = ['heading', 'text-editor', 'button', 'image', 'icon'];
     public const CACHE_KEYS = ['_elementor_css', '_elementor_element_cache', '_elementor_page_assets', '_elementor_controls_usage'];
+    // Elementor records the current editor when _elementor_data is written.
+    private const LAST_EDITOR_META = '_elementor_data_last_editor';
 
     public function availability(): array
     {
         $version = defined('ELEMENTOR_VERSION') ? ELEMENTOR_VERSION : '';
-        $available = $version !== '' && class_exists('Elementor\\Plugin') && isset(\Elementor\Plugin::$instance->documents);
+        $runtime = $version !== '' && class_exists('Elementor\\Plugin') ? (\Elementor\Plugin::$instance ?? null) : null;
+        $available = isset($runtime->documents, $runtime->elements_manager, $runtime->widgets_manager, $runtime->frontend)
+            && is_callable([$runtime->documents, 'get']) && is_callable([$runtime->documents, 'create'])
+            && is_callable([$runtime->elements_manager, 'get_element_types']) && is_callable([$runtime->widgets_manager, 'get_widget_types'])
+            && is_callable([$runtime->frontend, 'get_builder_content_for_display']);
         $reviewed = $available && version_compare($version, '3.21', '>=') && version_compare($version, '4.5', '<');
-        $classic = $reviewed && isset(\Elementor\Plugin::$instance->elements_manager) && ElementorCapabilities::is_classic(\Elementor\Plugin::$instance->elements_manager->get_element_types('section')) && ElementorCapabilities::is_classic(\Elementor\Plugin::$instance->elements_manager->get_element_types('column'));
-        $containers = $reviewed && isset(\Elementor\Plugin::$instance->experiments) && \Elementor\Plugin::$instance->experiments->is_feature_active('container') && ElementorCapabilities::is_classic(\Elementor\Plugin::$instance->elements_manager->get_element_types('container'));
+        $classic = $reviewed && ElementorCapabilities::is_classic($runtime->elements_manager->get_element_types('section')) && ElementorCapabilities::is_classic($runtime->elements_manager->get_element_types('column'));
+        $containers = $reviewed && ElementorCapabilities::is_classic($runtime->elements_manager->get_element_types('container'));
         $supported = $reviewed && ($classic || $containers);
         $catalog = $supported ? (new ElementorCapabilities())->catalog() : [];
         return [
@@ -27,7 +33,9 @@ final class ElementorAdapter implements Adapter
             'providers' => ElementorCapabilities::providers(), 'widget_catalog' => $catalog,
             'classic' => $classic, 'layout' => $containers ? 'flexbox' : 'classic', 'containers' => $containers, 'atomic' => false,
             'unsupported_features' => ['Atomic V4 generation/editing and automatic conversion.', 'Unmapped classic widgets: retained when possible, not generated automatically.', 'Form delivery actions/integrations: configure in Elementor.', 'Advanced scrolling/parallax effects and arbitrary code.'],
-            'message' => !$available ? __('Activate Elementor to use AI Page Builder.', 'cort-ai-studio') : (!$supported
+            'message' => !$available ? ($version
+                ? __('The Elementor document, widget, or frontend runtime has not initialized. Check Elementor and reload this page.', 'cort-ai-studio')
+                : __('Activate Elementor to use AI Page Builder.', 'cort-ai-studio')) : (!$supported
                 ? ($reviewed ? __('No compatible classic/Flexbox element runtime was found.', 'cort-ai-studio') : __('This Elementor version is outside the reviewed range (3.21–4.4). Page writes are disabled.', 'cort-ai-studio'))
                 : __('Classic sections and Flexbox are supported. Atomic V4 documents are read-only in this release.', 'cort-ai-studio')),
         ];
@@ -252,7 +260,7 @@ final class ElementorAdapter implements Adapter
         if (is_wp_error($document) || !$document) return self::error('preview', __('Could not create the preview draft.', 'cort-ai-studio'));
         $id = (int) $document->get_post()->ID;
         foreach ($row['state']['source']['meta'] ?? [] as $key => $values) {
-            if ($key === '_elementor_data' || in_array($key, self::CACHE_KEYS, true)) continue;
+            if (in_array($key, ['_elementor_data', self::LAST_EDITOR_META], true) || in_array($key, self::CACHE_KEYS, true)) continue;
             delete_post_meta($id, $key);
             foreach ($values as $value) add_post_meta($id, $key, wp_slash($value));
         }
@@ -273,10 +281,10 @@ final class ElementorAdapter implements Adapter
         if (is_wp_error($saved)) return $saved;
         // Exact server-owned snapshot only; no client/AI metadata is accepted.
         foreach (get_post_meta($id) as $key => $values) {
-            if (self::protected_key($key)) delete_post_meta($id, $key);
+            if (self::protected_key($key) && $key !== self::LAST_EDITOR_META) delete_post_meta($id, $key);
         }
         foreach ($backup['meta'] as $key => $values) {
-            if (!self::protected_key($key) || in_array($key, self::CACHE_KEYS, true)) continue;
+            if (!self::protected_key($key) || $key === self::LAST_EDITOR_META || in_array($key, self::CACHE_KEYS, true)) continue;
             foreach ($values as $value) add_post_meta($id, $key, wp_slash($value));
         }
         $fields = array_intersect_key($backup['post'], array_flip(['post_content', 'post_excerpt']));
@@ -284,16 +292,20 @@ final class ElementorAdapter implements Adapter
         if (is_wp_error($result)) return $result;
         $this->invalidate($id);
         $after = $this->snapshot($id);
-        if (is_wp_error($after) || self::hash($after['elements']) !== self::hash($backup['elements']) || self::hash($after['meta']) !== self::hash($backup['meta'])) return self::error('restore', __('The restored structure did not match its backup. Restoration was rolled back.', 'cort-ai-studio'));
-        foreach ($backup['post'] as $field => $value) {
-            if ($field !== 'post_modified_gmt' && $after['post'][$field] !== $value) return self::error('restore', __('The restored page fields did not match the backup. Restoration was rolled back.', 'cort-ai-studio'));
-        }
+        if (is_wp_error($after) || !$this->matches_backup($after, $backup)) return self::error('restore', __('The restored page did not match its backup. Restoration was rolled back.', 'cort-ai-studio'));
         return true;
+    }
+
+    public function matches_backup(array $snapshot, array $backup): bool
+    {
+        unset($snapshot['meta'][self::LAST_EDITOR_META], $backup['meta'][self::LAST_EDITOR_META]);
+        unset($snapshot['post']['post_modified_gmt'], $backup['post']['post_modified_gmt']);
+        return self::hash($snapshot) === self::hash($backup);
     }
 
     public function metadata_fingerprint(array $meta): string
     {
-        unset($meta['_elementor_data'], $meta['_elementor_version'], $meta['_elementor_pro_version']);
+        unset($meta['_elementor_data'], $meta['_elementor_version'], $meta['_elementor_pro_version'], $meta[self::LAST_EDITOR_META]);
         return self::hash($meta);
     }
 

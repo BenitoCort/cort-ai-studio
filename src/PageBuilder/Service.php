@@ -20,6 +20,17 @@ final class Service
         private Adapter $adapter, private PlanEngine $blueprint, private PreviewBackup $previews, private Images $images
     ) {}
 
+    public function status(): array
+    {
+        return [
+            'elementor' => $this->adapter->availability(),
+            'api_key_configured' => $this->settings->api_key() !== '',
+            'can_create' => $this->can_create_page(),
+            'current' => $this->current(),
+            'history' => $this->history(),
+        ];
+    }
+
     public function start(array $input): array|WP_Error
     {
         $settings = $this->settings->read();
@@ -27,13 +38,15 @@ final class Service
         if (is_wp_error($options)) return $options;
         $existing = $this->repository->request(get_current_user_id(), $options['request_id']);
         if ($existing) return $this->view($existing);
-        if (!$this->adapter->availability()['supported']) return Support::error('version', $this->adapter->availability()['message']);
+        $availability = $this->adapter->availability();
+        if (!$availability['supported']) return Support::error('version', $availability['message']);
+        if ($options['operation'] === 'create' && !$this->can_create_page()) return $this->create_permission_error();
         if ($this->repository->active(get_current_user_id())) return Support::error('active', __('Resume or discard your current Page Builder proposal first.', 'cort-ai-studio'), 409);
         $recent = $this->repository->history(get_current_user_id(), 1);
         if ($recent && time() - strtotime($recent[0]['created_at'] . ' UTC') < 8) return Support::error('rate', __('Wait a few seconds before creating another proposal.', 'cort-ai-studio'), 429);
 
         $source = null;
-        $analysis = ['tree' => [], 'design' => $this->adapter->design(), 'layout' => $this->adapter->availability()['layout']];
+        $analysis = ['tree' => [], 'design' => $this->adapter->design(), 'layout' => $availability['layout']];
         if ($options['page_id']) {
             $analysis = $this->adapter->inspect($options['page_id']);
             if (is_wp_error($analysis)) return $analysis;
@@ -54,7 +67,7 @@ final class Service
             'options' => $options, 'source' => $source, 'source_hash' => $source ? $this->adapter->fingerprint($source) : '',
             'analysis' => $analysis, 'profile' => $settings['profile'], 'rates' => $settings['rates'], 'budget' => $settings['budget'],
             'style' => $settings['style'], 'media' => $media, 'warnings' => [], 'stage' => 'submit', 'dispatch' => '',
-            'reserve' => 0.0, 'adapter_version' => $this->adapter->availability()['version'],
+            'reserve' => 0.0, 'adapter_version' => $availability['version'],
             'visual_pipeline' => $this->blueprint instanceof DesignPlanning && in_array($options['operation'], ['create', 'add'], true),
         ];
         if ($state['visual_pipeline']) $state['stage'] = 'design_submit';
@@ -79,6 +92,7 @@ final class Service
         $row = $this->allowed($id);
         if (is_wp_error($row)) return $row;
         if (!in_array($row['status'], ['generating', 'applying', 'restoring'], true) || ($row['state']['retry_at'] ?? 0) > time()) return $this->view($row);
+        if ($row['status'] === 'generating' && $row['operation'] === 'create' && !$this->can_create_page()) return $this->create_permission_error();
         $row = $this->repository->claim($id);
         if (!$row) return $this->get($id);
         if (!in_array($row['status'], ['generating', 'applying', 'restoring'], true)) return $this->commit($row);
@@ -321,6 +335,7 @@ final class Service
         $row = $this->allowed($id);
         if (is_wp_error($row)) return $row;
         if ($row['status'] === 'applied') return $this->view($row);
+        if ($row['operation'] === 'create' && !$this->can_create_page()) return $this->create_permission_error();
         if ($row['status'] !== 'preview' || ($input['approved'] ?? null) !== true || ($input['preview_hash'] ?? '') !== ($row['state']['preview_hash'] ?? '') || ($row['state']['reviewed_hash'] ?? '') !== ($row['state']['preview_hash'] ?? '')) return Support::error('approval', __('Open the real preview, review it, and explicitly approve this version before applying.', 'cort-ai-studio'), 409);
         $row = $this->repository->claim($id);
         if (!$row) return Support::error('busy', __('This operation is busy. Try again shortly.', 'cort-ai-studio'), 409);
@@ -388,7 +403,7 @@ final class Service
         $snapshot = $this->adapter->snapshot($id);
         if (is_wp_error($snapshot)) { $row['status'] = 'conflict'; $state['warnings'][] = $snapshot->get_error_message(); }
         elseif ($state['dispatch'] === 'restore') {
-            if (Support::hash($snapshot['elements']) === Support::hash($state['backup']['elements']) && Support::hash($snapshot['meta']) === Support::hash($state['backup']['meta'])) $row['status'] = 'restored';
+            if ($this->adapter->matches_backup($snapshot, $state['backup'])) $row['status'] = 'restored';
             elseif ($this->adapter->fingerprint($snapshot) === $state['after_hash']) $row['status'] = 'applied';
             else $row['status'] = 'conflict';
         } elseif ($this->adapter->fingerprint($snapshot) === ($state['source_hash'] ?: $state['preview_hash'])) $row['status'] = 'preview';
@@ -530,18 +545,33 @@ final class Service
         return Support::error('storage', __('Could not persist the operation. Reload to recover its recorded state.', 'cort-ai-studio'), 503);
     }
 
+    private function can_create_page(): bool
+    {
+        $capability = get_post_type_object('page')->cap->create_posts ?? '';
+        return $capability !== '' && current_user_can($capability);
+    }
+
+    private function create_permission_error(): WP_Error
+    {
+        return Support::error('create_permission', __('You do not have permission to create WordPress pages.', 'cort-ai-studio'), 403);
+    }
+
     private function options(array $input, array $settings): array|WP_Error
     {
         $request = $input['request_id'] ?? '';
         $op = $input['operation'] ?? '';
         $page = filter_var($input['page_id'] ?? 0, FILTER_VALIDATE_INT);
         $images = filter_var($input['image_count'] ?? 0, FILTER_VALIDATE_INT);
-        if (!is_string($request) || !wp_is_uuid($request, 4) || !in_array($op, self::OPERATIONS, true) || $page === false || $page < 0 || (($op === 'create') !== ($page === 0)) || $images === false || $images < 0 || $images > 2) return Support::error('input', __('Check the page, operation, and image options.', 'cort-ai-studio'));
+        if (!is_string($request) || !wp_is_uuid($request, 4) || $page === false || $page < 0 || $images === false || $images < 0 || $images > 2) return Support::error('input', __('Check the page and image options.', 'cort-ai-studio'));
+        if (!in_array($op, self::OPERATIONS, true) || (($op === 'create') !== ($page === 0))) return Support::error('operation', __('Select an operation supported for this page selection.', 'cort-ai-studio'));
         $model = Text::choice($input['model'] ?? $settings['model'], Settings::models(), '');
+        if ($model === '') return Support::error('model', __('Select a supported OpenAI model.', 'cort-ai-studio'));
         $effort = Text::choice($input['effort'] ?? $settings['effort'], Settings::efforts($model), '');
+        if ($effort === '') return Support::error('reasoning', __('Select a reasoning level supported by the OpenAI model.', 'cort-ai-studio'));
         $instructions = Text::field($input['instructions'] ?? '', 7000, true);
         $title = Text::field($input['title'] ?? '', 180);
-        if ($model === '' || $effort === '' || (!in_array($op, ['remove', 'reorder'], true) && $instructions === '') || ($op === 'create' && $title === '')) return Support::error('input', __('Provide instructions, a title for new pages, and a supported AI configuration.', 'cort-ai-studio'));
+        if ($op === 'create' && $title === '') return Support::error('title', __('Enter a page title.', 'cort-ai-studio'));
+        if (!in_array($op, ['remove', 'reorder'], true) && $instructions === '') return Support::error('instructions', __('Enter AI instructions.', 'cort-ai-studio'));
         if ($images && !current_user_can('upload_files')) return Support::error('upload', __('Media upload permission is required for image generation.', 'cort-ai-studio'), 403);
         if (!is_array($input['media_ids'] ?? []) || count($input['media_ids'] ?? []) > 20) return Support::error('media', __('Select at most 20 media files.', 'cort-ai-studio'));
         foreach (['reuse_media', 'allow_image_reuse'] as $flag) if (isset($input[$flag]) && !is_bool($input[$flag])) return Support::error('media_options', __('Check the media selection options.', 'cort-ai-studio'));
@@ -553,7 +583,7 @@ final class Service
             'request_id' => strtolower($request), 'operation' => $op, 'page_id' => $page, 'model' => $model, 'effort' => $effort,
             'instructions' => $instructions, 'title' => $title, 'slug' => sanitize_title(Text::field($input['slug'] ?? '', 180) ?: $title),
             'section_id' => Text::field($input['section_id'] ?? '', 40), 'anchor_id' => Text::field($input['anchor_id'] ?? '', 40),
-            'position' => Text::choice($input['position'] ?? 'end', array_fill_keys(['start', 'end', 'before', 'after'], ''), 'end'),
+            'position' => in_array($op, ['add', 'reorder'], true) ? Text::choice($input['position'] ?? 'end', array_fill_keys(['start', 'end', 'before', 'after'], ''), 'end') : 'end',
             'media_ids' => array_values(array_unique(array_map('absint', $input['media_ids'] ?? []))),
             'image_count' => $images, 'quality' => Text::choice($input['quality'] ?? $settings['quality'], Settings::qualities(), $settings['quality']),
             'document_layout' => $op === 'create' ? Text::choice($input['document_layout'] ?? 'auto', array_fill_keys(['auto', 'default', 'elementor_header_footer', 'elementor_canvas'], ''), 'default') : 'preserve',

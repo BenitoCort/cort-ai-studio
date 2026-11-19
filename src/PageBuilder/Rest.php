@@ -2,6 +2,7 @@
 namespace CortAIStudio\PageBuilder;
 
 use CortAIStudio\Rest as PluginRest;
+use Throwable;
 use WP_Error;
 use WP_REST_Request;
 
@@ -14,7 +15,7 @@ final class Rest
     public function register(): void
     {
         $routes = [
-            '/status' => ['GET', fn() => ['elementor' => $this->adapter->availability(), 'current' => $this->service->current(), 'history' => $this->service->history()]],
+            '/status' => ['GET', [$this->service, 'status']],
             '/pages' => ['GET', [$this, 'pages']],
             '/pages/(?P<id>\d+)' => ['GET', fn(WP_REST_Request $r) => $this->adapter->inspect((int) $r['id'])],
             '/operations' => ['POST', fn(WP_REST_Request $r) => $this->service->start($this->body($r))],
@@ -24,7 +25,20 @@ final class Rest
             '/operations/(?P<id>\d+)/restore' => ['POST', fn(WP_REST_Request $r) => $this->service->restore((int) $r['id'], $this->body($r))],
             '/operations/(?P<id>\d+)/discard' => ['POST', fn(WP_REST_Request $r) => $this->service->discard((int) $r['id'])],
         ];
-        foreach ($routes as $path => [$method, $callback]) register_rest_route(PluginRest::ROUTE, '/page-builder' . $path, ['methods' => $method, 'callback' => $callback, 'permission_callback' => [$this, 'permission']]);
+        foreach ($routes as $path => [$method, $callback]) {
+            register_rest_route(PluginRest::ROUTE, '/page-builder' . $path, [
+                'methods' => $method,
+                'permission_callback' => [$this, 'permission'],
+                'callback' => static function (WP_REST_Request $request) use ($path, $callback) {
+                    try {
+                        return $callback($request);
+                    } catch (Throwable $error) {
+                        error_log(sprintf('Cort AI Page Builder REST %s: %s at %s:%d', $path, get_class($error), basename($error->getFile()), $error->getLine()));
+                        return Support::error('server', __('WordPress interrupted this Page Builder request. Check the server log and try again.', 'cort-ai-studio'), 500);
+                    }
+                },
+            ]);
+        }
     }
 
     public function permission(WP_REST_Request $request): bool|WP_Error

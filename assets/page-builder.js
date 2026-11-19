@@ -11,17 +11,25 @@
     const input = (name) => fields.namedItem(name);
     const frame = find('preview-frame');
     let nonce = config.nonce;
-    let availability = null;
+    let status = null;
+    let statusError = '';
     let analysis = null;
+    let analysisError = '';
     let operation = null;
-    let busy = true;
+    let current = null;
+    let busy = false;
     let loop = null;
     let mediaIds = [];
     let requestId = null;
     let pageNumber = 1;
     let pageEpoch = 0;
+    let analysisEpoch = 0;
     let historyEpoch = 0;
-    const active = () => ['generating', 'applying', 'restoring'].includes(operation?.status);
+    const active = (row) => ['generating', 'applying', 'restoring'].includes(row?.status);
+    const pending = (row) => active(row) || row?.status === 'preview';
+    const unfinished = () => current || (pending(operation) ? operation : null);
+    const needsAI = (op) => !['remove', 'reorder'].includes(op);
+    const efforts = () => config.efforts[input('model').value] || {};
     const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
     const number = new Intl.NumberFormat(document.documentElement.lang || 'en');
     const usd = new Intl.NumberFormat(document.documentElement.lang || 'en', {style: 'currency', currency: 'USD', maximumFractionDigits: 6});
@@ -39,58 +47,122 @@
     }
     async function request(path, method = 'GET', body) {
         let response;
+        let data;
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), method === 'GET' ? 20000 : 120000);
         try {
-            response = await fetch(endpoint(path), {method, credentials: 'same-origin', cache: 'no-store', headers: {'X-WP-Nonce': nonce, 'Accept': 'application/json', ...(body === undefined ? {} : {'Content-Type': 'application/json'})}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
-        } catch { const err = new Error(labels.network); err.retryable = true; throw err; }
+            response = await fetch(endpoint(path), {
+                method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+                headers: {'X-WP-Nonce': nonce, 'Accept': 'application/json', ...(body === undefined ? {} : {'Content-Type': 'application/json'})},
+                ...(body === undefined ? {} : {body: JSON.stringify(body)}),
+            });
+            data = await response.json().catch((err) => {
+                if (controller.signal.aborted) throw err;
+                return null;
+            });
+        } catch {
+            const err = new Error(controller.signal.aborted ? labels.timeout : labels.network);
+            err.retryable = true;
+            throw err;
+        } finally {
+            window.clearTimeout(timeout);
+        }
         nonce = response.headers.get('X-WP-Nonce') || nonce;
-        const data = await response.json().catch(() => null);
         if (!response.ok || !data) {
-            const err = new Error(['rest_cookie_invalid_nonce', 'cort_ai_pb_nonce'].includes(data?.code) ? labels.session : data?.message || labels.network);
+            const expired = ['rest_cookie_invalid_nonce', 'cort_ai_pb_nonce'].includes(data?.code);
+            const message = typeof data?.message === 'string' && data.message ? data.message : labels.http_error.replace('%s', response.status);
+            const err = new Error(expired ? labels.session : message);
+            err.code = data?.code;
             err.retryable = response.status >= 500 || (response.ok && !data);
             throw err;
         }
         return data;
     }
     function safeLink(el, value) {
+        if (typeof value !== 'string' || !value) return false;
         try { const url = new URL(value, location.href); if (!['https:', 'http:'].includes(url.protocol) || url.origin !== location.origin) return false; el.href = url.href; return true; } catch { return false; }
     }
-    function lock() {
-        fieldset.disabled = busy || !availability?.supported || active() || operation?.status === 'preview';
-        find('generate').disabled = fieldset.disabled || (Number(input('page_id').value) > 0 && (!analysis?.editable || analysis.id !== Number(input('page_id').value)));
-        find('apply').disabled = busy || !operation?.reviewed || !find('approval').checked;
-        find('restore').disabled = busy || !find('restore-approval').checked;
-        for (const name of ['discard', 'resume', 'refresh', 'restore', 'load-preview']) {
-            if (name !== 'restore') find(name).disabled = busy || (name === 'resume' && Boolean(loop));
+    function generationBlocker() {
+        if (busy) return labels.working;
+        if (!status) return statusError || labels.loading;
+        if (!status.elementor.supported) return status.elementor.message;
+        const proposal = unfinished();
+        if (proposal?.status === 'preview') return labels.pending_review;
+        if (proposal?.status === 'generating') return labels.pending_generation;
+        if (proposal) return labels.pending_write;
+
+        const id = Number(input('page_id').value);
+        const option = input('operation').selectedOptions[0];
+        if (!option || option.disabled) return labels.operation_required;
+        const op = option.value;
+        if (id) {
+            if (analysis?.id !== id) return analysisError || labels.inspecting;
+            if (!analysis.editable) return analysis.issues.join(' ') || labels.read_only;
+        } else if (!status.can_create) return labels.create_permission;
+
+        if (['create', 'add'].includes(op) && !status.elementor.widget_catalog.some((widget) => widget.authoring)) return labels.widgets_required;
+        if (needsAI(op)) {
+            if (!status.api_key_configured) return labels.key_required;
+            const levels = Object.keys(efforts());
+            if (!levels.length) return labels.model_required;
+            if (!levels.includes(input('effort').value)) return labels.effort_required;
         }
+        if (input('title').required && !input('title').value.trim()) return labels.title_required;
+        if (input('instructions').required && !input('instructions').value.trim()) return labels.instructions_required;
+        if (input('section_id').required && !input('section_id').value) return labels.section_required;
+        if (input('anchor_id').required && (!input('anchor_id').value || (op === 'reorder' && input('anchor_id').value === input('section_id').value))) return labels.anchor_required;
+        return '';
+    }
+
+    function lock() {
+        fieldset.disabled = busy;
+        const blocker = generationBlocker();
+        find('generate').disabled = Boolean(blocker);
+        const note = find('generation-status');
+        if (note.textContent !== blocker) note.textContent = blocker;
+        note.hidden = !blocker;
+        find('retry-status').hidden = !(statusError || (status && !status.api_key_configured && needsAI(input('operation').value)));
+        find('current-proposal').hidden = !unfinished();
+        find('apply').disabled = busy || operation?.status !== 'preview' || !operation.reviewed || !find('approval').checked;
+        find('restore').disabled = busy || !operation?.can_restore || !find('restore-approval').checked;
+        for (const name of ['discard', 'resume', 'refresh', 'load-preview']) find(name).disabled = busy || (name === 'resume' && Boolean(loop));
     }
     function adapt() {
         const fresh = Number(input('page_id').value) === 0;
         for (const option of input('operation').options) option.disabled = option.value === 'redesign' || ((option.value === 'create') !== fresh);
         if (fresh) input('operation').value = 'create';
-        else if (input('operation').value === 'create') input('operation').value = 'add';
+        else if (!input('operation').selectedOptions[0] || input('operation').value === 'create') input('operation').value = 'add';
         const op = input('operation').value;
         for (const el of root.querySelectorAll('[data-new-page]')) el.hidden = !fresh;
         input('title').required = fresh;
         find('section-field').hidden = fresh || op === 'add';
+        input('section_id').required = !find('section-field').hidden;
         find('position-field').hidden = !['add', 'reorder'].includes(op);
         find('anchor-field').hidden = find('position-field').hidden || !['before', 'after'].includes(input('position').value);
-        input('instructions').required = !['remove', 'reorder'].includes(op);
+        input('anchor_id').required = !find('anchor-field').hidden;
+        input('instructions').required = needsAI(op);
         find('scope-note').textContent = ['remove', 'reorder'].includes(op) ? 'The selected section and position define the change. Instructions are optional; no OpenAI text request is made.' : ['edit', 'content'].includes(op) ? 'Only supported texts, links, buttons and images inside the selected section can change. Layout and other settings are preserved.' : 'Generates native sections, columns/containers and widgets. Advanced redesign and Atomic editing are not supported.';
         lock();
     }
 
-    async function pages() {
+    async function loadPages(page) {
         const epoch = ++pageEpoch;
-        const selected = input('page_id').value;
-        const result = await request(`pages?search=${encodeURIComponent(find('page-search').value)}&page=${pageNumber}`);
-        if (epoch !== pageEpoch) return;
-        input('page_id').replaceChildren(new Option(labels.new_page, '0'), ...result.pages.map((page) => new Option(`${page.title || '(Untitled)'} · ${page.status}`, String(page.id))));
-        if ([...input('page_id').options].some((option) => option.value === selected)) input('page_id').value = selected;
-        else { analysis = null; find('analysis').hidden = true; }
-        find('pages-prev').disabled = pageNumber <= 1;
-        find('pages-next').disabled = pageNumber >= result.total_pages;
-        find('page-number').textContent = `${pageNumber} / ${Math.max(1, result.total_pages)}`;
-        adapt();
+        find('page-number').textContent = labels.loading_pages;
+        try {
+            const result = await request(`pages?search=${encodeURIComponent(find('page-search').value)}&page=${page}`);
+            if (epoch !== pageEpoch) return;
+            if (!Array.isArray(result.pages) || !Number.isInteger(result.total_pages)) throw new Error(labels.http_error.replace('%s', 200));
+            const selected = input('page_id').value;
+            input('page_id').replaceChildren(new Option(labels.new_page, '0'), ...result.pages.map((item) => new Option(`${item.title || '(Untitled)'} · ${item.status}`, String(item.id))));
+            if ([...input('page_id').options].some((option) => option.value === selected)) input('page_id').value = selected;
+            else inspectSelection();
+            pageNumber = page;
+            find('pages-prev').disabled = pageNumber <= 1;
+            find('pages-next').disabled = pageNumber >= result.total_pages;
+            find('page-number').textContent = `${pageNumber} / ${Math.max(1, result.total_pages)}`;
+        } catch (err) {
+            if (epoch === pageEpoch) find('page-number').textContent = labels.pages_failed.replace('%s', err.message);
+        }
     }
     function tree(nodes) {
         const list = node('ul');
@@ -105,14 +177,22 @@
         }
         return list;
     }
-    input('page_id').addEventListener('change', async () => {
+    async function inspectSelection() {
+        const epoch = ++analysisEpoch;
         const id = Number(input('page_id').value);
-        analysis = null; find('analysis').hidden = !id; adapt();
+        analysis = null;
+        analysisError = '';
+        find('analysis').hidden = !id;
+        find('page-info').textContent = id ? labels.inspecting : '';
+        find('page-issues').textContent = '';
+        find('tree').replaceChildren();
+        input('section_id').replaceChildren();
+        input('anchor_id').replaceChildren();
+        adapt();
         if (!id) return;
-        busy = true; lock(); error();
         try {
             const result = await request('pages/' + id);
-            if (Number(input('page_id').value) !== id) return;
+            if (epoch !== analysisEpoch) return;
             analysis = result;
             find('page-info').textContent = `${result.title} · ${result.status} · ${result.layout} · ${layoutName(result.document_layout)}`;
             find('page-issues').textContent = result.issues.join(' ');
@@ -120,15 +200,29 @@
             const options = result.tree.map((item) => new Option(`${item.label} · ${item.id}`, item.id));
             input('section_id').replaceChildren(new Option(labels.select_section, ''), ...options);
             input('anchor_id').replaceChildren(new Option(labels.select_section, ''), ...result.tree.map((item) => new Option(`${item.label} · ${item.id}`, item.id)));
-            if (!result.editable) error(result.issues.join(' ') || labels.read_only);
-        } catch (err) { error(err.message); }
-        finally { busy = false; adapt(); }
-    });
+        } catch (err) {
+            if (epoch !== analysisEpoch) return;
+            analysis = null;
+            analysisError = err.message;
+            find('page-info').textContent = '';
+            find('page-issues').textContent = analysisError;
+        } finally {
+            if (epoch === analysisEpoch) adapt();
+        }
+    }
+    input('page_id').addEventListener('change', inspectSelection);
+    form.addEventListener('input', lock);
     form.addEventListener('change', adapt);
-    find('search').addEventListener('click', () => { pageNumber = 1; pages().catch((err) => error(err.message)); });
+    find('search').addEventListener('click', () => loadPages(1));
     find('page-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); find('search').click(); } });
-    for (const [name, delta] of [['pages-prev', -1], ['pages-next', 1]]) find(name).addEventListener('click', () => { pageNumber += delta; pages().catch((err) => error(err.message)); });
-    input('model').addEventListener('change', () => { const value = input('effort').value; const choices = config.efforts[input('model').value]; input('effort').replaceChildren(...Object.entries(choices).map(([id, label]) => new Option(label, id))); input('effort').value = choices[value] ? value : 'medium'; });
+    for (const [name, delta] of [['pages-prev', -1], ['pages-next', 1]]) find(name).addEventListener('click', () => loadPages(pageNumber + delta));
+    input('model').addEventListener('change', () => {
+        const value = input('effort').value;
+        const choices = efforts();
+        const levels = Object.keys(choices);
+        input('effort').replaceChildren(...levels.map((id) => new Option(choices[id], id)));
+        input('effort').value = levels.includes(value) ? value : (levels.includes('medium') ? 'medium' : (levels[0] || ''));
+    });
     find('media').addEventListener('click', () => {
         if (!window.wp?.media) return;
         const picker = wp.media({title: labels.media_title, button: {text: labels.media_button}, library: {type: 'image'}, multiple: true});
@@ -139,6 +233,22 @@
         });
         picker.open();
     });
+
+    function updateOperation(row) {
+        operation = row;
+        if (current?.id === row.id) current = pending(row) ? row : null;
+    }
+
+    function openOperation(row) {
+        if (operation?.id !== row.id) {
+            find('approval').checked = false;
+            find('restore-approval').checked = false;
+            frame.removeAttribute('src');
+            find('preview-scroll').hidden = true;
+        }
+        updateOperation(row);
+        draw();
+    }
 
     function draw() {
         if (!operation) { lock(); return; }
@@ -161,7 +271,7 @@
             for (const [key, value] of Object.entries(operation.design_quality.checks || {})) list.append(node('li', `${names[key] || key.replaceAll('_', ' ')}: ${value}`));
             designReport.append(list, node('p', operation.design_quality.validation_scope));
         }
-        find('resume').hidden = !active() || Boolean(loop);
+        find('resume').hidden = !active(operation) || Boolean(loop);
         find('discard').hidden = ['applied', 'restored', 'cancelled', 'applying', 'restoring'].includes(operation.status);
         find('warnings').replaceChildren(...operation.warnings.map((warning) => node('li', warning)));
         if (operation.usage.usage_incomplete) find('warnings').append(node('li', labels.partial_usage));
@@ -182,21 +292,36 @@
     }
     async function drive() {
         let retries = 0;
-        while (active()) {
+        while (active(operation)) {
+            const id = operation.id;
             await wait(operation.retry_ms || 1000);
-            try { operation = await request(`operations/${operation.id}/advance`, 'POST'); retries = 0; draw(); if (operation.pause) break; }
+            if (operation?.id !== id || !active(operation)) break;
+            if (busy) continue;
+            try {
+                const row = await request(`operations/${id}/advance`, 'POST');
+                if (operation?.id !== id || !active(operation)) break;
+                updateOperation(row);
+                retries = 0;
+                draw();
+                if (operation.pause) break;
+            }
             catch (err) { if (!err.retryable || retries++ >= 3) { error(err.message); break; } await wait(retries * 1800); }
         }
     }
     function begin() {
-        if (loop || !active()) return;
+        if (loop || !active(operation)) return;
         error(); loop = drive().finally(() => { loop = null; draw(); refreshHistory().catch(() => {}); }); draw();
     }
     async function refreshHistory() {
         const epoch = ++historyEpoch;
-        const status = await request('status');
+        const result = await request('status');
         if (epoch !== historyEpoch) return;
-        availability = status.elementor;
+        if (typeof result.elementor?.supported !== 'boolean' || typeof result.api_key_configured !== 'boolean' || typeof result.can_create !== 'boolean' || !Array.isArray(result.elementor.widget_catalog) || !Array.isArray(result.history)) {
+            throw new Error(labels.http_error.replace('%s', 200));
+        }
+        status = result;
+        current = result.current;
+        const availability = result.elementor;
         const providers = availability.providers || {};
         const providerText = [providers.pro_elements?.detected ? `PRO Elements ${providers.pro_elements.version}` : '', providers.elementor_pro?.detected ? `Elementor Pro ${providers.elementor_pro.version}` : ''].filter(Boolean);
         find('availability').textContent = [availability.message, availability.version ? `Elementor ${availability.version}` : '', ...providerText].filter(Boolean).join(' · ');
@@ -208,34 +333,72 @@
         find('unsupported-features').replaceChildren(...[...(availability.unsupported_features || []), ...compatible.filter((widget) => widget.limitations).map((widget) => `${widget.title}: ${widget.limitations}`)].map((text) => node('li', text)));
         find('other-widgets').replaceChildren(...catalog.filter((widget) => !widget.authoring).map((widget) => node('li', `${widget.title} (${widget.name}): ${widget.reason}${widget.fallback ? ` Alternative: ${widget.fallback}.` : ''}`)));
         find('compatibility-panel').hidden = false;
-        find('history').replaceChildren(...status.history.map((item) => {
+        find('history').replaceChildren(...result.history.map((item) => {
             const tr = node('tr');
             for (const [main, small] of [[item.title, item.created_at + ' UTC'], [item.operation, item.status], [item.model, `${item.usage.input_tokens} / ${item.usage.output_tokens}`], [String(item.usage.images), usd.format(item.usage.estimated_usd)]]) { const td = node('td', main); td.append(node('small', small)); tr.append(td); }
-            const td = node('td', item.backup_id); const button = node('button', 'Review'); button.type = 'button'; button.className = 'button'; button.addEventListener('click', () => { if (busy || loop) return; operation = item; find('approval').checked = false; find('restore-approval').checked = false; frame.removeAttribute('src'); find('preview-scroll').hidden = true; draw(); find('result').scrollIntoView({block: 'start'}); }); td.append(button); tr.append(td); return tr;
+            const td = node('td', item.backup_id); const button = node('button', 'Review'); button.type = 'button'; button.className = 'button'; button.addEventListener('click', () => { if (busy || loop) return; openOperation(current?.id === item.id ? current : item); find('result').scrollIntoView({block: 'start'}); }); td.append(button); tr.append(td); return tr;
         }));
-        return status;
+        lock();
+        return result;
+    }
+
+    async function loadStatus() {
+        status = null;
+        statusError = '';
+        error();
+        lock();
+        try {
+            const result = await refreshHistory();
+            if (result?.current && !loop) openOperation(result.current);
+            if (result?.elementor.available) loadPages(pageNumber);
+        } catch (err) {
+            status = null;
+            statusError = err.message;
+        } finally {
+            lock();
+        }
     }
     form.addEventListener('submit', async (event) => {
-        event.preventDefault(); if (find('generate').disabled) return;
+        event.preventDefault();
+        if (generationBlocker() || !form.reportValidity()) { lock(); return; }
+        const data = Object.fromEntries(new FormData(form));
         busy = true; error(); lock();
         try {
             requestId ||= typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (Number(c) ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> Number(c) / 4).toString(16));
-            // FormData excludes controls while the parent fieldset is disabled; read values explicitly.
-            const data = Object.fromEntries(['page_id', 'operation', 'title', 'slug', 'section_id', 'anchor_id', 'position', 'instructions', 'model', 'effort', 'quality', 'size', 'image_count', 'document_layout'].map((name) => [name, input(name).value]));
-            operation = await request('operations', 'POST', {...data, reuse_media: input('reuse_media').checked, allow_image_reuse: input('allow_image_reuse').checked, request_id: requestId, media_ids: mediaIds});
-            requestId = null; find('approval').checked = false; find('restore-approval').checked = false;
-            frame.removeAttribute('src'); find('preview-scroll').hidden = true; draw(); begin();
+            const row = await request('operations', 'POST', {...data, reuse_media: input('reuse_media').checked, allow_image_reuse: input('allow_image_reuse').checked, request_id: requestId, media_ids: mediaIds});
+            current = pending(row) ? row : null;
+            requestId = null;
+            openOperation(row);
+            begin();
             find('result').scrollIntoView({block: 'start'});
-        } catch (err) { error(err.message); if (!err.retryable) requestId = null; }
+        } catch (err) {
+            error(err.message);
+            if (!err.retryable) requestId = null;
+            if (['cort_ai_pb_active', 'cort_ai_pb_key', 'cort_ai_pb_create_permission'].includes(err.code)) {
+                const result = await refreshHistory().catch(() => null);
+                if (result?.current) openOperation(result.current);
+            }
+        }
         finally { busy = false; draw(); }
     });
+    find('retry-status').addEventListener('click', loadStatus);
+    find('current-proposal').addEventListener('click', () => {
+        const proposal = unfinished();
+        if (!proposal || (loop && operation?.id !== proposal.id)) return;
+        openOperation(proposal);
+        find('result').scrollIntoView({block: 'start'});
+    });
     find('resume').addEventListener('click', begin);
-    find('refresh').addEventListener('click', async () => { if (!operation) return; busy = true; lock(); try { operation = await request('operations/' + operation.id); await refreshHistory(); } catch (err) { error(err.message); } finally { busy = false; draw(); } });
+    find('refresh').addEventListener('click', async () => { if (!operation) return; busy = true; error(); lock(); try { updateOperation(await request('operations/' + operation.id)); await refreshHistory(); } catch (err) { error(err.message); } finally { busy = false; draw(); } });
     find('load-preview').addEventListener('click', () => { if (!operation?.preview_url) return; const link = node('a'); if (!safeLink(link, operation.preview_url)) { error(labels.network); return; } frame.src = link.href; find('preview-scroll').hidden = false; });
     find('device').addEventListener('change', () => { frame.width = find('device').value; });
     window.addEventListener('message', async (event) => {
         if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'cort-ai-pb-preview' || event.data.id !== operation?.id || event.data.hash !== operation?.preview_hash) return;
-        try { operation = await request('operations/' + operation.id); draw(); } catch (err) { error(err.message); }
+        const id = operation.id;
+        try {
+            const row = await request('operations/' + id);
+            if (operation?.id === id && operation.status === 'preview') { updateOperation(row); draw(); }
+        } catch (err) { error(err.message); }
     });
     find('approval').addEventListener('change', lock);
     find('restore-approval').addEventListener('change', lock);
@@ -243,10 +406,11 @@
         if (busy || !operation) return;
         busy = true; error(); lock();
         try {
-            operation = await request(`operations/${operation.id}/${action}`, 'POST', action === 'discard' ? undefined : {approved: true, preview_hash: operation.preview_hash});
+            updateOperation(await request(`operations/${operation.id}/${action}`, 'POST', action === 'discard' ? undefined : {approved: true, preview_hash: operation.preview_hash}));
             find('approval').checked = false; find('restore-approval').checked = false; await refreshHistory();
         } catch (err) { error(err.message); }
         finally { busy = false; draw(); }
     });
-    refreshHistory().then(async (state) => { operation = state.current; if (availability.available) await pages(); draw(); }).catch((err) => error(err.message)).finally(() => { busy = false; adapt(); draw(); });
+    adapt();
+    loadStatus();
 })();

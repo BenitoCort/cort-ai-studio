@@ -17,6 +17,7 @@ const html = await admin.text();
 assert.ok(html.includes('data-page-builder') && html.includes('page-builder.js'), 'Page Builder UI/assets missing.');
 assert.ok(html.includes('name="document_layout"') && html.includes('name="reuse_media"') && html.includes('data-design-report'), 'Visual planning/layout controls missing.');
 assert.ok(html.includes('data-compatibility-panel') && html.includes('data-compatible-widgets'), 'Capability inventory panel missing.');
+assert.ok(html.includes('data-generation-status') && html.includes('data-current-proposal'), 'The form has no way to explain or recover from a generation blocker.');
 assert.ok(!html.includes('sk-cort-ai-isolated-test-key'), 'API key appeared in the HTML.');
 const config = JSON.parse(html.match(/window\.CortAIPageBuilder = (\{.*?\});/s)?.[1] || '{}');
 assert.ok(config.root && config.nonce, 'Admin REST configuration missing.');
@@ -53,6 +54,9 @@ async function review(row) {
 assert.equal((await request('status', 'GET', undefined, false)).response.status, 403, 'Missing REST nonce accepted.');
 const state = await ok('status');
 assert.equal(state.elementor.supported, true);
+assert.equal(state.can_create, true);
+assert.equal(state.api_key_configured, true);
+assert.ok(!JSON.stringify(state).includes('sk-cort-ai-isolated-test-key'), 'API key appeared in the status response.');
 assert.equal(state.elementor.atomic, false, 'Atomic must remain excluded.');
 assert.ok(state.elementor.widget_catalog.some((widget) => widget.name === 'counter' && widget.authoring), 'Actual classic-widget contracts missing from the admin API.');
 if (state.elementor.providers?.pro_elements?.detected) {
@@ -73,6 +77,7 @@ const pageId = row.page_id;
 const original = await ok('pages/' + pageId);
 assert.equal(original.status, 'draft');
 assert.equal(original.editable, true);
+assert.equal(original.layout, state.elementor.containers ? 'flexbox' : 'classic');
 assert.equal(original.tree.length, 2);
 assert.equal(original.document_layout, 'elementor_canvas', 'Canvas template did not persist through approval.');
 await new Promise((resolve) => setTimeout(resolve, 8100)); // The actual public endpoint cooldown.
@@ -84,7 +89,7 @@ assert.equal(row.status, 'applied');
 assert.ok(row.backup_id && row.can_restore);
 assert.equal((await ok('pages/' + pageId)).tree[1].id, original.tree[0].id, 'Section move was not saved.');
 row = await ok(`operations/${row.id}/restore`, 'POST', {approved: true});
-assert.equal(row.status, 'restored');
+assert.equal(row.status, 'restored', row.warnings.join(' '));
 assert.equal((await ok('pages/' + pageId)).tree[0].id, original.tree[0].id, 'Original order was not restored.');
 console.log('PASS HTTP admin/assets, nonce protection, native frontend preview acknowledgement, mandatory review, draft creation, reorder, source isolation, approval, backup and restoration.');
 console.log('No real OpenAI calls; provider responses come from the disposable fixture.');
