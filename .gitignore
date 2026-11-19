@@ -1,0 +1,22 @@
+# Generated distribution files
+/dist/
+
+# Local dependencies
+/node_modules/
+
+# Sensitive configuration
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+debug.log
+
+# Temporary files
+*.tmp
+*.bak
+
+# Operating system
+.DS_Store
+Thumbs.db

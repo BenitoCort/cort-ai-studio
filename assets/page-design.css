@@ -1,0 +1,25 @@
+/* Accessibility guardrails only. All generated visual design remains native Elementor controls. */
+.cort-ai-designed .elementor-button:focus-visible {
+    outline: 3px solid #17211e;
+    outline-offset: 4px;
+    box-shadow: 0 0 0 3px #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+    .cort-ai-designed,
+    .cort-ai-designed * {
+        animation: none !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
+    .cort-ai-designed,
+    .cort-ai-designed .e-con,
+    .cort-ai-designed .elementor-element,
+    .cort-ai-designed img {
+        transform: none !important;
+    }
+    .cort-ai-designed.elementor-invisible,
+    .cort-ai-designed .elementor-invisible {
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+}
